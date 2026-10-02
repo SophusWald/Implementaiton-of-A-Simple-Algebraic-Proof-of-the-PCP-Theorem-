@@ -1,7 +1,8 @@
 # A simple algebraic PCP for 3-COLOR, in Python
 
 A readable implementation of the PCP verifier and the honest (completeness)
-prover from the appendix of *A Simple Algebraic Proof of the PCP Theorem*
+prover from the appendix of
+[*A Simple Algebraic Proof of the PCP Theorem*](https://drive.google.com/file/d/1pWzJvBc48sUURmrZ0LVTzeWnPD2oInfn/view?usp=sharing)
 (Amireddy, Behera, Srinivasan, Sudan). These are the algorithms "The PCP Verifier"
 and "Completeness Prover".
 
