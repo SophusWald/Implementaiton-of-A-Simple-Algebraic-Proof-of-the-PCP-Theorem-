@@ -40,7 +40,8 @@ It also writes the oracles `chi` and `A0` in full to `proof_tables.txt`
 |---|---|
 | `simple_pcp/verifier.py` | `verify(params, n, edges, proof, rng)`: one run of the verifier. Returns accept/reject and the list of failed tests. |
 | `simple_pcp/prover.py` | `honest_prover(params, n, edges, coloring)`: builds the proof from a proper 3-colouring. |
-| `simple_pcp/simulate.py` | Random graph → prover → verifier, plus the printout of `chi` and `A0`. |
+| `simple_pcp/simulate.py` | Generates a random 3-colorable graph, and hands it to prover.py which generates a certificate.
+verifier.py then checks the certificate and print out `chi` and `A0`. |
 | `simple_pcp/algebra.py` | Shared algebra: the field `F_q`, vectors, polynomials over `F_2` and over `F_q`, the map `Psi`, the points `Phi_lambda`, and the parameters. |
 
 ## The proof
@@ -56,24 +57,23 @@ The proof consists of eight oracles: a point oracle and a lines oracle for each 
 |---|---|---|
 | `chi` = LDE(Color) | m | the colouring |
 | `chi_prime` = chi(Y1) − chi(Y2) | 2m | differences of colours |
-| `A0` = Σ A⁽ⁱ⁾(X) Yᵢ | 2m | certificate that chi³ − 1 vanishes on `H^m` |
-| `B0` = Σ B⁽ⁱ⁾(X) Yᵢ | 4m | certificate that LDE(E)·(chi_prime³ − 1) vanishes on `H^{2m}` |
+| `A0` = Σ A⁽ⁱ⁾(X) Yᵢ | 2m | certificate that chi³ − 1 vanishes on `H^m` ie. the coloring uses only 3 colours.|
+| `B0` = Σ B⁽ⁱ⁾(X) Yᵢ | 4m | certificate that LDE(E)·(chi_prime³ − 1) vanishes on `H^{2m}` ie. every edge has different coloured verticies. |
 
-For a polynomial `f` in `k` variables:
+Each polynomials are encoded in a point oracle and a lines oracle. 
+The point oracle is encoded using the Hadamard encoding, 
+while the Lines oracle is encoded first with the Reed-Muller encoding and then Hadamard.
 
-- the **point oracle** is `f[a, P] = P(ρ(f(a)))` for `a ∈ F_q^k` and `P ∈ P_3(t, F_2)`;
-- the **lines oracle** is `f_1[(a, b), w, P] = P(ρ(Ψ(f(a + Xb))[w]))`.
-
-Each oracle is a huge table of bits, so the prover hands it to the
-verifier as a function that computes any requested entry. The verifier
-only ever queries individual entries.
+Each oracle is a huge table of bits, larger than can be reasonably stored,
+so the prover hands it to the verifier as a function that computes any requested entry.
+The verifier only ever queries individual entries.
 
 ### Proof length (default parameters: q = 4, h = 3, m = 2, c = 2)
 
 | Oracle | Bits |
 |---|---|
 | `chi` | 256 |
-| `chi_prime`, `A0` | 4,096 each |
+| `A0` | 4,096 |
 | `B0` | 2²⁰ |
 | lines oracles | 2³² (`chi`) up to 2⁵⁶ (`B0`) |
 
@@ -90,11 +90,3 @@ The total is about 2⁵⁶ bits, almost all of it the lines oracle of `B0`.
   the paper's `c₂·hm`.
 - **Graphs have exactly `h^m` vertices.** Unused grid points act as isolated
   vertices of colour 1.
-
-## The table printout
-
-`proof_tables.txt` lists, for `chi` and `A0`, the 16 questions `P_0, …, P_15`
-(all polynomials in two bits). It then gives one row per point `a`, with the
-16 answer bits. The last column is the decoded value `f(a)`, written with
-`w = ω`; it is only there for readability and is not part of the proof.
-Vertex `v` is the point `(v mod h, v div h)` of `H^2`, with `H = {0, 1, w}`.
