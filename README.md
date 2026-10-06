@@ -1,8 +1,9 @@
 # A simple algebraic PCP for 3-COLOR, in Python
 The paper
 [*A Simple Algebraic Proof of the PCP Theorem*](https://drive.google.com/file/d/1pWzJvBc48sUURmrZ0LVTzeWnPD2oInfn/view?usp=sharing)
-(Amireddy, Behera, Srinivasan, Sudan),
-presents a simple PCP-protocol which does not rely on the rather abstract notion of composition of PCPs.
+(Amireddy, Behera, Srinivasan, Sudan, Willumsgaard),
+presents a simple PCP-protocol for 3-coloring, which does not rely on the rather abstract notion of composition of PCPs,
+but instead on the simpler cod-concatenation.
 As a result of this, we are able to implement the full algorithm in simple readable python code,
 which can both simulate the honest prover and verifier.
 
@@ -41,7 +42,7 @@ It also writes the oracles `chi` and `A0` in full to `proof_tables.txt`
 | `simple_pcp/verifier.py` | `verify(params, n, edges, proof, rng)`: one run of the verifier. Returns accept/reject and the list of failed tests. |
 | `simple_pcp/prover.py` | `honest_prover(params, n, edges, coloring)`: builds the proof from a proper 3-colouring. |
 | `simple_pcp/simulate.py` | Generates a random 3-colorable graph, and hands it to prover.py which generates a certificate.
-verifier.py then checks the certificate and print out `chi` and `A0`. |
+verifier.py then checks the certificate and print out `chi` and `A0` in a seperate textfile. |
 | `simple_pcp/algebra.py` | Shared algebra: the field `F_q`, vectors, polynomials over `F_2` and over `F_q`, the map `Psi`, the points `Phi_lambda`, and the parameters. |
 
 ## The proof
@@ -50,7 +51,7 @@ To gain a full overview of how the protocol works, we refer to the paper
 [*A Simple Algebraic Proof of the PCP Theorem*](https://drive.google.com/file/d/1pWzJvBc48sUURmrZ0LVTzeWnPD2oInfn/view?usp=sharing).
 We give a short description here. 
 
-Vertices corresponds to points in a grid `H^m`, and the colours correspond to `1, ω, ω²` in `F_q`, where `ω` is the primitive third root of unity.
+Vertices corresponds to points in a grid `H^m`, and the colours correspond to `1, ω, ω²` in `F_q`, where `ω` is the primitive third root of unity, and `q` is a power of 2.
 The proof consists of eight oracles: a point oracle and a lines oracle for each of four polynomials.
 
 | Polynomial | Variables | Meaning |
@@ -78,6 +79,9 @@ The verifier only ever queries individual entries.
 | lines oracles | 2³² (`chi`) up to 2⁵⁶ (`B0`) |
 
 The total is about 2⁵⁶ bits, almost all of it the lines oracle of `B0`.
+
+### Proof length (default parameters: q = 4, h = 3, m = 2, c = 2)
+
 
 ## Parameters and simplifications
 
