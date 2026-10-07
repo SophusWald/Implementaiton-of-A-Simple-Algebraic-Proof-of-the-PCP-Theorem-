@@ -35,6 +35,15 @@ The simulation:
 It also writes the oracles `chi` and `A0` in full to `proof_tables.txt`
 (see below).
 
+## Interactive version in the browser
+
+`full_pcp/` contains the same protocol, ported line by line to JavaScript,
+with an interactive page (`full_pcp/index.html`). The page draws the graph,
+lets you choose the field size (q = 4 up to 256), and runs the verifier
+against the honest prover and four cheating provers. A test script checks
+that the port builds the same polynomials and reaches the same verdicts as
+the Python code. See `full_pcp/README.md`.
+
 ## Files
 
 | File | Contents |

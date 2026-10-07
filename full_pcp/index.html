@@ -1,0 +1,760 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>A PCP verifier for graph 3-coloring</title>
+  <script>
+    window.MathJax = {
+      tex: {
+        inlineMath: [["\\(", "\\)"]],
+        displayMath: [["\\[", "\\]"]]
+      }
+    };
+  </script>
+  <script defer src="https://cdn.jsdelivr.net/npm/mathjax@3.2.2/es5/tex-chtml.js"></script>
+  <script src="algebra.js"></script>
+  <script src="prover.js"></script>
+  <script src="verifier.js"></script>
+  <style>
+    body {
+      max-width: 760px;
+      margin: 1em auto;
+      padding: 0 1em;
+    }
+    button, select { font: inherit; }
+    table { border-collapse: collapse; }
+    th, td {
+      border-bottom: 1px solid #aaa;
+      padding: 0.35em 0.8em 0.35em 0;
+      text-align: left;
+      vertical-align: top;
+    }
+    th:first-child, td:first-child { white-space: nowrap; }
+    td.num, th.num { text-align: right; }
+    svg {
+      border: 1px solid #999;
+      display: block;
+      height: auto;
+      max-width: 100%;
+    }
+    progress { width: min(28em, 100%); }
+    .edge { stroke: #888; stroke-width: 1.5; }
+    .edge.bad { stroke: #900; stroke-width: 3; }
+    .vertex { stroke: #000; stroke-width: 1; }
+    .vertex.forbidden { stroke-width: 3; }
+    .vertex-label {
+      fill: #fff;
+      font: 12px sans-serif;
+      text-anchor: middle;
+      pointer-events: none;
+    }
+    .pass { color: #075e07; }
+    .fail { color: #900; }
+    .muted { color: #555; }
+    .detail { margin: 0.3em 0 0.8em; }
+    code { overflow-wrap: anywhere; }
+  </style>
+</head>
+<body>
+  <h2>A PCP verifier for graph 3-coloring</h2>
+
+  <p>
+    This is an implementation of the PCP protocol for 3-coloring provided in
+    <a href="https://eccc.weizmann.ac.il/report/2026/134/"><i>A Simple Algebraic Proof of the PCP Theorem</i></a>.
+  </p>
+  <p>
+    An untrusted prover claims that a graph is 3-colorable, and provides a claimed proof.
+    The verifier wants to check that the proof is correct, but only wants to read a constant
+    number of bits of the proof.
+  </p>
+  <h3>1. Configuration</h3>
+  <p>
+    <label for="example">Choose a graph:</label>
+    <select id="example">
+      <option value="random">random graph</option>
+      <option value="colorable">3-colorable graph</option>
+      <option value="noncolorable">non-3-colorable graph</option>
+    </select>
+    <label for="size">Vertices:</label>
+    <select id="size">
+      <option value="2">4</option>
+      <option value="3" selected>9</option>
+      <option value="4">16</option>
+    </select>
+  </p>
+  <p>
+    <label for="field">Field:</label>
+    <select id="field">
+      <option value="2">q = 4</option>
+      <option value="4">q = 16</option>
+      <option value="6" selected>q = 64</option>
+      <option value="8">q = 256</option>
+    </select>
+    <label for="strategy">Cheating strategy:</label>
+    <select id="strategy">
+      <option value="closest">closest 3-coloring</option>
+      <option value="four-color">closest 4-coloring</option>
+      <option value="fake-hadamard">fake Hadamard encoding</option>
+      <option value="not-polynomial">functions that are not polynomials</option>
+    </select>
+  </p>
+  <p>
+    <button id="new-graph" type="button">Generate graph</button>
+  </p>
+  <p class="muted">
+    The cheating strategy is used only when the graph is not 3-colorable.
+    The verifier is random, so it is run 100 times, to see how often it catches a wrong proof.
+  </p>
+
+  <h3>2. Input graph</h3>
+  <p id="graph-status" aria-live="polite"></p>
+  <svg id="graph" viewBox="0 0 520 360" width="520" height="360"
+       role="img" aria-label="The graph and the prover's claimed coloring"></svg>
+  <p id="graph-note" class="muted"></p>
+  <p id="params" class="muted"></p>
+
+  <h3>3. Prover</h3>
+  <p id="prover-status"></p>
+  <p>
+    The proof consists of eight oracle tables. An oracle is simply a large
+    table of bits that the verifier may query at a few chosen positions.
+    Each of the four polynomials below has two oracles. The point oracle
+    <code>f</code> holds the degree-3 Hadamard encoding of \(f(a)\) for every
+    point \(a\). The lines oracle <code>f_lines</code> holds, for every line
+    \(a + Xb\), the univariate polynomial \(f(a+Xb)\), first reduced in degree
+    by \(\Psi\) and then Hadamard encoded.
+  </p>
+  <table aria-label="The polynomials behind the oracles">
+    <thead>
+      <tr><th>Oracles</th><th>Polynomial and purpose</th><th class="num">Bits</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><code>chi</code>, <code>chi_lines</code></td>
+        <td>\(\chi = \mathrm{LDE}(\mathrm{Color})\) in \(m\) variables: the prover's claimed coloring, extended to a low-degree polynomial.</td>
+        <td class="num" id="bits-chi"></td>
+      </tr>
+      <tr>
+        <td><code>chi_prime</code>, <code>chi_prime_lines</code></td>
+        <td>\(\chi'(Y_1,Y_2) = \chi(Y_1) - \chi(Y_2)\) in \(2m\) variables: the difference between the colors at two vertices.</td>
+        <td class="num" id="bits-chi_prime"></td>
+      </tr>
+      <tr>
+        <td><code>A0</code>, <code>A0_lines</code></td>
+        <td>\(A_0 = \sum_i A^{(i)}(X)\,Y_i\) in \(2m\) variables: certifies that \(\chi^3 - 1\) vanishes on \(H^m\), i.e. every vertex has one of the three colors.</td>
+        <td class="num" id="bits-A0"></td>
+      </tr>
+      <tr>
+        <td><code>B0</code>, <code>B0_lines</code></td>
+        <td>\(B_0 = \sum_i B^{(i)}(X)\,Y_i\) in \(4m\) variables: certifies that \(\mathrm{LDE}(E)\cdot(\chi'^3 - 1)\) vanishes on \(H^{2m}\), i.e. adjacent vertices have different colors.</td>
+        <td class="num" id="bits-B0"></td>
+      </tr>
+    </tbody>
+  </table>
+  <p class="muted">
+    No table is ever written out. The prover answers each query by evaluating its
+    polynomials, exactly as the honest prover in <code>simple_pcp</code> does.
+  </p>
+
+  <p>
+    <button id="run" type="button">Run 100 verifier rounds</button>
+  </p>
+
+  <h3>4. Verifier</h3>
+  <p>
+    Each round draws fresh randomness and runs all <span id="num-checks">77</span>
+    tests of the verifier. The first round is shown step by step. The tests fall
+    into four groups.
+  </p>
+  <ol id="checks">
+    <li>
+      Is every oracle a degree-3 Hadamard encoding?
+      <span id="check-0"></span>
+      <div class="muted detail">
+        For each oracle, the verifier tests at a random position that the answers
+        are affine and multiplicative in the question \(P\) (self-corrected with a random
+        \(R\)). This checks that each table of bits really encodes a field element,
+        rather than being an arbitrary table of bits.
+        Tests <code>LDT.*.affine*</code>, <code>LDT.*.mult*</code>, <code>ZERO.*.affine*</code>.
+      </div>
+      <div id="detail-0" class="detail"></div>
+    </li>
+    <li>
+      Do the oracles represent low-degree polynomials, and do they agree?
+      <span id="check-1"></span>
+      <div class="muted detail">
+        The degree-\(c\) test checks that a lines-table entry is consistent with
+        degree-reduced low-degree polynomials. The line-vs-point test checks that
+        a random line through a random point agrees with the point table.
+        <code>CONS.chi_prime</code> checks \(\chi'(a,b) = \chi(a) - \chi(b)\).
+        Tests <code>*.degree_c</code>, <code>*.line_vs_point</code>, <code>CONS.chi_prime</code>.
+      </div>
+      <div id="detail-1" class="detail"></div>
+    </li>
+    <li>
+      Does A<sub>0</sub> prove that &chi; uses only the three allowed colors?
+      <span id="check-2"></span>
+      <div class="muted detail">
+        At a random point \(a \in \mathbb{F}_q^m\), the verifier reads \(A_0\) at
+        \((a, 0)\), where it must be 0, and at \((a, Z_H(a))\), where it must equal
+        \(\chi(a)^3 - 1\). Both values come from the lines table, through line
+        correction. Tests <code>ZERO.A1.is_zero</code>, <code>ZERO.A2.equals_val</code>.
+      </div>
+      <div id="detail-2" class="detail"></div>
+    </li>
+    <li>
+      Does B<sub>0</sub> prove that adjacent vertices have different colors?
+      <span id="check-3"></span>
+      <div class="muted detail">
+        The same zero test for \(B_0\) at random \((a,b) \in \mathbb{F}_q^{2m}\):
+        \(B_0(a,b,0) = 0\) and
+        \(B_0(a,b,Z_H(a,b)) = \mathrm{LDE}(E)(a,b)\,(\chi'(a,b)^3 - 1)\).
+        The verifier computes \(\mathrm{LDE}(E)(a,b)\) itself, from the graph.
+        Tests <code>ZERO.B1.is_zero</code>, <code>ZERO.B2.equals_prop</code>.
+      </div>
+      <div id="detail-3" class="detail"></div>
+    </li>
+  </ol>
+  <p id="first-run" class="muted"></p>
+
+  <p id="progress-label" aria-live="polite">The verifier has not run yet.</p>
+  <progress id="progress" max="100" value="0">0/100</progress>
+
+  <h3>5. Result</h3>
+  <p id="result" aria-live="polite">Generate a graph and run the verifier.</p>
+  <div id="failure-table"></div>
+
+  <h3>Cheating prover strategies</h3>
+  <p>
+    If the graph is not 3-colorable, the cheating prover submits a false proof
+    based on the strategy selected above. For a 3-colorable graph, the prover
+    is always honest and the selected cheating strategy is ignored.
+  </p>
+  <p>
+    The cheating proofs are built the way the honest prover would build them. The only
+    difference is that the honest prover requires the polynomial division by the
+    vanishing polynomials \(Z_H(X_i)\) to leave remainder zero. A false coloring leaves
+    a nonzero remainder, and the cheating prover silently drops it. In the first two
+    strategies, every oracle is still a genuine encoding of a low-degree polynomial, so
+    only the zero test can catch the lie. The last two strategies also fool the zero
+    test. To do so, they have to break either the Hadamard encoding or the low-degree
+    structure, and the remaining tests catch that.
+  </p>
+  <dl>
+    <dt><b>Closest 3-coloring</b></dt>
+    <dd>
+      Use only the three allowed colors and minimize the number of
+      monochromatic edges. In the generated non-3-colorable examples, exactly
+      one edge is bad. \(\chi\) and \(A_0\) are honest. The division for
+      \(B_0\) leaves a remainder, so \(B_0\) cannot satisfy both zero-test
+      identities. The verifier rejects through <code>ZERO.B2.equals_prop</code>,
+      at a random point \((a,b)\) that is almost never the bad edge itself.
+    </dd>
+    <dt><b>Closest 4-coloring</b></dt>
+    <dd>
+      While the graph is not 3-colorable, a 4-coloring might exist.
+      Properly color every edge using four colors. The fourth color is the
+      field element 0, which is not a cube root of unity. \(B_0\) is honest,
+      because the colors at the ends of each edge still differ. The division
+      for \(A_0\) leaves a remainder, and <code>ZERO.A2.equals_val</code> rejects.
+    </dd>
+    <dt><b>Fake Hadamard encoding</b></dt>
+    <dd>
+      Start with the closest 3-coloring proof, and change the table
+      <code>chi_prime</code>. At each point, an honest table answers the question
+      \(P\) with \(P(\rho(x))\), where \(x = \chi'(a,b)\). This is a linear
+      combination of the coefficients of \(P\), with weights \(\prod_{i\in S} x_i\),
+      one for each monomial \(S\). The cheating table keeps the answers linear in
+      \(P\), and keeps the weights of the constant and linear monomials. Questions
+      of degree at most 1, which are all that the consistency tests ask, therefore get
+      honest answers. The weights of the quadratic monomials are changed, by solving a
+      small linear system over \(\mathbb{F}_2\), so that the zero test's question
+      \(\Lambda_\gamma\) is always answered as if the coloring were proper. The zero
+      test passes, but the table is no longer a Hadamard codeword. Only the
+      multiplicativity tests <code>LDT.chi_prime.point.mult*</code> can notice.
+    </dd>
+    <dt><b>Functions that are not polynomials</b></dt>
+    <dd>
+      Start with the closest 3-coloring proof. The zero test reads the certificate
+      \(B_0(X,Y)\) only on the slices \(Y = 0\) and \(Y = Z_H(X)\). The prover
+      replaces \(B_0\) by the function that agrees with it everywhere except on the
+      slice \(Y = Z_H(X)\), where it is set to \(\mathrm{LDE}(E)(X)(\chi'(X)^3 - 1)\),
+      and does the same for \(A_0\). This function is not a polynomial of low degree.
+      Each line of the lines table that starts on the slice is moved by a constant, so
+      that it takes the new value at \(\lambda = 0\). The zero test passes, but the
+      line no longer agrees with the point table at its other points, and
+      <code>ZERO.B2.line_vs_point</code> rejects.
+    </dd>
+  </dl>
+
+  <h3>Why the field size matters</h3>
+  <p>
+    Completeness holds for every \(q\): an honest proof is always accepted.
+    Soundness needs \(q\) to be large compared with the degree bound \(D\) of the
+    polynomials (\(D = 20\) for 9 vertices). With \(q = 4\), a cheating prover is
+    caught far less often. At 16 vertices, \(H\) is all of \(\mathbb{F}_4\), so
+    \(Z_H\) is identically zero on \(\mathbb{F}_4\) and the zero test is almost
+    blind. Try it: switch the field to \(q = 4\) and run the verifier on a
+    non-3-colorable graph.
+  </p>
+
+  <details>
+    <summary>How does the encoding work?</summary>
+    <p>
+      Before encoding, the entries of the oracles are elements of
+      \(\mathbb{F}_q\), where \(q=2^t\). One field element therefore takes
+      \(t=\log_2 q\) bits to write down, which is already more than the
+      verifier is allowed to read. An entry of a line-table oracle contains
+      even more information: it describes a univariate polynomial of degree
+      \(D\) over \(\mathbb{F}_q\).
+    </p>
+    <p>
+      The four algebraic objects \(\chi,\chi',A_0,B_0\) are encoded using
+      the degree-3 Hadamard encoding. Fix an \(\mathbb{F}_2\)-linear
+      identification \(\rho:\mathbb{F}_q\to\mathbb{F}_2^t\). For a field
+      element \(a\in\mathbb{F}_q\), its encoding records
+      \(P(\rho(a))\) for every polynomial
+      \(P\in\mathcal{P}_3(t,\mathbb{F}_2)\). Thus every encoded position is a
+      single bit, even though it represents information about an element of
+      \(\mathbb{F}_q\).
+    </p>
+    <p>
+      This code has constant relative distance. Consequently, the verifier can
+      distinguish two different field elements and test whether a submitted
+      table has the required Hadamard form by reading only a constant number
+      of bits.
+    </p>
+    <p>
+      For the line tables, the coefficient vector of each degree-\(D\)
+      univariate polynomial is first transformed into a constant-degree
+      multivariate polynomial using the map \(\Psi\). The values of that
+      polynomial are then degree-3 Hadamard encoded in the same way. This lets
+      the verifier combine low-degree tests and local correction with only a
+      constant number of oracle queries, at the cost of a small increase in
+      randomness.
+    </p>
+    <p>
+      On this page, a field element is written as the integer whose binary
+      digits are its \(t\) bits \(\rho(x)\). For example, in \(\mathbb{F}_4\),
+      2 stands for \(\omega\) and 3 for \(\omega^2 = \omega + 1\).
+    </p>
+  </details>
+
+  <script>
+    "use strict";
+
+    const ROUNDS = 100;
+    const M = 2;
+    const COLORS = ["#377eb8", "#e41a1c", "#4daf4a", "#984ea3"];
+    const ORACLE_NAMES = ["chi", "chi_prime", "A0", "B0"];
+    const GROUPS = [
+      name => /\.(affine|mult)\d$/.test(name),
+      name => /\.(degree_c|line_vs_point)$/.test(name) || name === "CONS.chi_prime",
+      name => name.startsWith("ZERO.A") && /\.(is_zero|equals_val)$/.test(name),
+      name => name.startsWith("ZERO.B") && /\.(is_zero|equals_prop)$/.test(name)
+    ];
+
+    const $ = id => document.getElementById(id);
+    const svg = $("graph");
+    const graphStatus = $("graph-status");
+    const proverStatus = $("prover-status");
+    const graphNote = $("graph-note");
+    const progress = $("progress");
+    const progressLabel = $("progress-label");
+    const result = $("result");
+    const failureTable = $("failure-table");
+    const runButton = $("run");
+    const newGraphButton = $("new-graph");
+    const exampleSelect = $("example");
+    const sizeSelect = $("size");
+    const fieldSelect = $("field");
+    const strategySelect = $("strategy");
+    const controls = [runButton, newGraphButton, exampleSelect, sizeSelect, fieldSelect, strategySelect];
+
+    let N = 9;
+    let graph = null;      // { edges, isColorable, honestColoring, closestColoring, fourColoring }
+    let state = null;      // { params, coloring, strategy, built, EHat, conflicts, invalidVertices }
+    let runNumber = 0;
+
+    // ---- graphs -------------------------------------------------------------
+
+    function edgeKey(a, b) {
+      return a < b ? `${a}-${b}` : `${b}-${a}`;
+    }
+
+    function addEdge(edges, seen, a, b) {
+      if (a === b) return;
+      if (a > b) [a, b] = [b, a];
+      const key = edgeKey(a, b);
+      if (!seen.has(key)) {
+        seen.add(key);
+        edges.push([a, b]);
+      }
+    }
+
+    function connectIsolatedVertices(edges, seen, colorings) {
+      for (let v = 1; v < N; v += 1) {
+        if (edges.some(([a, b]) => a === v || b === v)) continue;
+        const candidates = Array.from({ length: v }, (_, i) => i).filter(u =>
+          colorings.every(colors => colors[u] !== colors[v])
+        );
+        const u = candidates.length
+          ? candidates[Math.floor(Math.random() * candidates.length)]
+          : 0;
+        addEdge(edges, seen, v, u);
+      }
+    }
+
+    function generateColorableGraph() {
+      const edges = [];
+      const seen = new Set();
+      const planted = Array.from({ length: N }, (_, i) => i < 3 ? i : Math.floor(Math.random() * 3));
+      const probability = Math.min(1, 4 / N);
+      for (let a = 0; a < N; a += 1) {
+        for (let b = a + 1; b < N; b += 1) {
+          if (planted[a] !== planted[b] && Math.random() < probability) addEdge(edges, seen, a, b);
+        }
+      }
+      connectIsolatedVertices(edges, seen, [planted]);
+      return { edges, isColorable: true, honestColoring: planted };
+    }
+
+    function generateNoncolorableGraph() {
+      const edges = [];
+      const seen = new Set();
+      const closest = Array.from({ length: N }, (_, i) => i < 4 ? [0, 1, 2, 0][i] : Math.floor(Math.random() * 3));
+      const four = Array.from({ length: N }, (_, i) => {
+        if (i < 4) return i;
+        return Math.random() < 0.28 ? 3 : closest[i];
+      });
+
+      // Vertices 0,1,2,3 form K4. Hence the graph is not 3-colorable.
+      // Under `closest`, its edge 0-3 is the only conflict; zero conflicts are
+      // impossible, so this assignment is genuinely closest to proper.
+      for (let a = 0; a < 4; a += 1) {
+        for (let b = a + 1; b < 4; b += 1) addEdge(edges, seen, a, b);
+      }
+      const probability = Math.min(1, 4 / N);
+      for (let a = 0; a < N; a += 1) {
+        for (let b = a + 1; b < N; b += 1) {
+          if (a < 4 && b < 4) continue;
+          if (closest[a] !== closest[b] && four[a] !== four[b] && Math.random() < probability) {
+            addEdge(edges, seen, a, b);
+          }
+        }
+      }
+      connectIsolatedVertices(edges, seen, [closest, four]);
+      return { edges, isColorable: false, closestColoring: closest, fourColoring: four };
+    }
+
+    function generateGraph(kind) {
+      const actualKind = kind === "random"
+        ? (Math.random() < 0.5 ? "colorable" : "noncolorable")
+        : kind;
+      return actualKind === "colorable" ? generateColorableGraph() : generateNoncolorableGraph();
+    }
+
+    // ---- the prover ---------------------------------------------------------
+
+    function buildProver() {
+      const t = Number(fieldSelect.value);
+      const h = Number(sizeSelect.value);
+      PCP.setField(t);
+      const params = new PCP.Params(h, M, 2);
+      let coloring, strategy, built;
+      if (graph.isColorable) {
+        coloring = graph.honestColoring.slice();
+        strategy = "honest";
+        built = PCP.honestProver(params, N, graph.edges, coloring);
+      } else {
+        strategy = strategySelect.value;
+        coloring = (strategy === "four-color" ? graph.fourColoring : graph.closestColoring).slice();
+        built = PCP.cheatingProver(params, N, graph.edges, coloring);
+        if (strategy === "fake-hadamard") built.proof = PCP.fakeHadamardEncoding(params, built);
+        if (strategy === "not-polynomial") built.proof = PCP.fakeZeroSlices(params, built);
+      }
+      state = {
+        params,
+        coloring,
+        strategy,
+        built,
+        EHat: PCP.edgeLde(params, graph.edges),     // the verifier's own LDE(E)
+        conflicts: graph.edges.filter(([a, b]) => coloring[a] === coloring[b]),
+        invalidVertices: coloring.map((c, v) => c >= 3 ? v : -1).filter(v => v >= 0)
+      };
+    }
+
+    function formatBits(log2) {
+      return log2 < 20 ? Math.round(2 ** log2).toLocaleString("en") : `\\(\\approx 2^{${Math.round(log2)}}\\)`;
+    }
+
+    function oracleBitsLog2(params, k) {
+      // log2 of (point oracle + lines oracle) bits for a polynomial in k variables
+      const t = params.T;
+      const questions = PCP.numHadamardQuestionsLog2(3);
+      const point = k * t + questions;
+      const lines = 2 * k * t + params.c * params.m1 * t + questions;
+      return lines + Math.log2(1 + 2 ** (point - lines));
+    }
+
+    function updateProverSection() {
+      const { params } = state;
+      const vars = { chi: M, chi_prime: 2 * M, A0: 2 * M, B0: 4 * M };
+      for (const name of ORACLE_NAMES) $(`bits-${name}`).innerHTML = formatBits(oracleBitsLog2(params, vars[name]));
+      const dropped = state.built.droppedRemainder;
+      const droppedText = dropped.A0 && dropped.B0 ? "both divisions"
+        : dropped.A0 ? "the division for A<sub>0</sub>"
+        : dropped.B0 ? "the division for B<sub>0</sub>" : "no division";
+      if (state.strategy === "honest") {
+        proverStatus.innerHTML = `<span class="pass"><b>Honest prover.</b></span> It builds all eight oracles from a genuine proper 3-coloring. Both polynomial divisions leave remainder zero.`;
+      } else if (state.strategy === "four-color") {
+        proverStatus.innerHTML = `<span class="fail"><b>Dishonest prover: forbidden fourth color.</b></span> The claimed coloring is proper, but ${state.invalidVertices.length} vertices use a fourth color (the field element 0) that A<sub>0</sub> is supposed to rule out. The prover dropped a nonzero remainder in ${droppedText}.`;
+      } else if (state.strategy === "fake-hadamard") {
+        proverStatus.innerHTML = `<span class="fail"><b>Dishonest prover: fake Hadamard encoding.</b></span> It starts from the closest 3-coloring proof (dropping a nonzero remainder in ${droppedText}). It then changes the answers of the table <code>chi_prime</code> to quadratic questions, so that the zero test sees a proper coloring. The graph picture shows the underlying claimed coloring.`;
+      } else if (state.strategy === "not-polynomial") {
+        proverStatus.innerHTML = `<span class="fail"><b>Dishonest prover: functions that are not polynomials.</b></span> It starts from the closest 3-coloring proof (dropping a nonzero remainder in ${droppedText}). It then replaces A<sub>0</sub> and B<sub>0</sub> by functions that satisfy the zero-test identities exactly where the zero test looks, but are not polynomials of low degree. The graph picture shows the underlying claimed coloring.`;
+      } else {
+        proverStatus.innerHTML = `<span class="fail"><b>Dishonest prover: closest 3-coloring.</b></span> It uses only the allowed colors and has the minimum possible number of monochromatic edges (${state.conflicts.length}). The prover dropped a nonzero remainder in ${droppedText}.`;
+      }
+      const H = params.H.join(", ");
+      $("params").innerHTML =
+        `Parameters: \\(q = 2^{${params.T}} = ${PCP.Q}\\), \\(H = \\{${H}\\}\\), \\(m = ${M}\\), ` +
+        `\\(c = ${params.c}\\), degree bound \\(D = ${params.D}\\), \\(m_1 = ${params.m1}\\). ` +
+        `The vertices are the \\(${params.h}^{${M}} = ${N}\\) points of \\(H^{${M}}\\); hover over a vertex to see its point.`;
+      typeset();
+    }
+
+    // ---- drawing ------------------------------------------------------------
+
+    function positions() {
+      const cx = 260, cy = 180, radius = 145;
+      return Array.from({ length: N }, (_, i) => {
+        const angle = -Math.PI / 2 + 2 * Math.PI * i / N;
+        return [cx + radius * Math.cos(angle), cy + radius * Math.sin(angle)];
+      });
+    }
+
+    function svgElement(tag, attributes) {
+      const el = document.createElementNS("http://www.w3.org/2000/svg", tag);
+      for (const [key, value] of Object.entries(attributes)) el.setAttribute(key, value);
+      return el;
+    }
+
+    function drawGraph(revealConflicts = false) {
+      const points = positions();
+      const bad = new Set(state.conflicts.map(([a, b]) => edgeKey(a, b)));
+      svg.replaceChildren();
+
+      for (const [a, b] of graph.edges) {
+        svg.appendChild(svgElement("line", {
+          x1: points[a][0], y1: points[a][1], x2: points[b][0], y2: points[b][1],
+          class: revealConflicts && bad.has(edgeKey(a, b)) ? "edge bad" : "edge"
+        }));
+      }
+
+      const vertexRadius = N <= 9 ? 16 : 13;
+      points.forEach(([x, y], vertex) => {
+        const color = state.coloring[vertex];
+        const circle = svgElement("circle", {
+          cx: x, cy: y, r: vertexRadius, fill: COLORS[color],
+          class: revealConflicts && color >= 3 ? "vertex forbidden" : "vertex"
+        });
+        const point = state.params.vertexPoint(vertex);
+        const title = svgElement("title", {});
+        title.textContent = `vertex ${vertex + 1} = point (${point.join(", ")}) of H^${M}`;
+        circle.appendChild(title);
+        svg.appendChild(circle);
+
+        const label = svgElement("text", { x, y: y + 4, class: "vertex-label" });
+        label.textContent = String(vertex + 1);
+        svg.appendChild(label);
+      });
+    }
+
+    // ---- verifier UI --------------------------------------------------------
+
+    function resetVerifier() {
+      for (let i = 0; i < 4; i += 1) {
+        const span = $(`check-${i}`);
+        span.textContent = " — not checked";
+        span.className = "muted";
+        $(`detail-${i}`).innerHTML = "";
+      }
+      $("first-run").textContent = "";
+      progress.value = 0;
+      progress.textContent = `0/${ROUNDS}`;
+      progressLabel.textContent = "The verifier has not run yet.";
+      result.textContent = "Run the verifier to see the outcome.";
+      result.className = "muted";
+      failureTable.replaceChildren();
+    }
+
+    function typeset() {
+      if (window.MathJax && MathJax.typesetPromise) MathJax.typesetPromise().catch(() => {});
+    }
+
+    function chooseGraph() {
+      runNumber += 1;
+      N = Number(sizeSelect.value) ** M;
+      graph = generateGraph(exampleSelect.value);
+      changeProver();
+      graphStatus.innerHTML = graph.isColorable
+        ? `<span class="pass"><b>3-COLORABLE:</b></span> The generator constructed this graph together with a proper 3-coloring. The verifier is not given that witness.`
+        : `<span class="fail"><b>NOT 3-COLORABLE:</b></span> Vertices 1, 2, 3, and 4 form a K<sub>4</sub>, which cannot be colored with three colors. The verifier is not told where this obstruction is.`;
+    }
+
+    function changeProver() {
+      runNumber += 1;
+      buildProver();
+      resetVerifier();
+      drawGraph();
+      updateProverSection();
+      graphNote.textContent = "The vertex colors show the coloring claimed by the prover. The verifier receives only the oracles, not this convenient picture.";
+    }
+
+    function countingProof(proof, counts) {
+      // The same proof, counting how many bits the verifier reads from each oracle
+      const wrapped = {};
+      for (const [name, oracle] of Object.entries(proof)) {
+        counts[name] = 0;
+        wrapped[name] = (...args) => {
+          counts[name] += 1;
+          return oracle(...args);
+        };
+      }
+      return wrapped;
+    }
+
+    function wait(ms) {
+      return new Promise(resolve => setTimeout(resolve, ms));
+    }
+
+    function describeFailures(names) {
+      return names.length
+        ? `<span class="fail">failed: ${names.map(n => `<code>${n}</code>`).join(", ")}</span>`
+        : "";
+    }
+
+    async function showFirstRound(outcome, counts) {
+      const { failed, checks, randomness } = outcome;
+      for (let i = 0; i < 4; i += 1) {
+        const span = $(`check-${i}`);
+        span.textContent = " — checking...";
+        span.className = "muted";
+        await wait(i < 2 ? 350 : 450);
+        const inGroup = checks.filter(GROUPS[i]);
+        const failedInGroup = failed.filter(GROUPS[i]);
+        span.textContent = failedInGroup.length ? " — REJECT" : " — PASS";
+        span.className = failedInGroup.length ? "fail" : "pass";
+        $(`detail-${i}`).innerHTML =
+          `${inGroup.length - failedInGroup.length} of ${inGroup.length} tests passed. ${describeFailures(failedInGroup)}`;
+      }
+      const { a, b, lam } = randomness;
+      const { params } = state;
+      const onGrid = point => point.every(x => x < params.h);
+      const bitsRead = Object.values(counts).reduce((s, x) => s + x, 0);
+      const perOracle = ORACLE_NAMES.map(name =>
+        `<code>${name}</code> ${counts[name]}, <code>${name}_lines</code> ${counts[name + "_lines"]}`).join("; ");
+      $("first-run").innerHTML =
+        `Round 1 used the random points \\(a = (${a.join(", ")})\\), \\(b = (${b.join(", ")})\\) in \\(\\mathbb{F}_{${PCP.Q}}^{${M}}\\) ` +
+        `and \\(\\lambda = ${lam}\\). ` +
+        (onGrid(a) || onGrid(b)
+          ? `This time, ${onGrid(a) ? "a" : "b"} happens to be a vertex. `
+          : `Neither is a vertex. `) +
+        `The verifier never picks a particular vertex or edge to look at: a random point lies in \\(H^{${M}}\\) ` +
+        `with probability only \\((${params.h}/${PCP.Q})^{${M}}\\). ` +
+        `It read <b>${bitsRead} bits</b> of the proof (${perOracle}). This number does not depend on the size of the graph.`;
+      typeset();
+    }
+
+    async function runVerifier() {
+      const thisRun = ++runNumber;
+      controls.forEach(c => { c.disabled = true; });
+      resetVerifier();
+      drawGraph();
+      progressLabel.textContent = "Running round 1...";
+      await wait(30);
+
+      const { params, built, EHat } = state;
+      const rng = new PCP.Random((Math.random() * 2 ** 32) >>> 0);
+      const failureCounts = new Map();
+      let rejected = 0;
+
+      function record(outcome) {
+        if (!outcome.accept) rejected += 1;
+        for (const name of outcome.failed) failureCounts.set(name, (failureCounts.get(name) || 0) + 1);
+      }
+
+      try {
+        const counts = {};
+        const first = PCP.verify(params, N, graph.edges, countingProof(built.proof, counts), rng, EHat);
+        record(first);
+        $("num-checks").textContent = first.checks.length;
+        await showFirstRound(first, counts);
+        if (thisRun !== runNumber) return;
+        progress.value = 1;
+        progress.textContent = `1/${ROUNDS}`;
+        progressLabel.textContent = `Round 1 of ${ROUNDS} complete; running the remaining ${ROUNDS - 1} rounds quietly.`;
+        await wait(200);
+
+        let round = 1;
+        while (round < ROUNDS) {
+          const start = performance.now();
+          while (round < ROUNDS && performance.now() - start < 40) {
+            record(PCP.verify(params, N, graph.edges, built.proof, rng, EHat));
+            round += 1;
+          }
+          progress.value = round;
+          progress.textContent = `${round}/${ROUNDS}`;
+          progressLabel.textContent = `Round ${round} of ${ROUNDS}; ${rejected} rejected so far.`;
+          await wait(0);
+          if (thisRun !== runNumber) return;
+        }
+      } finally {
+        if (thisRun === runNumber) controls.forEach(c => { c.disabled = false; });
+      }
+
+      drawGraph(true);
+      graphNote.textContent = state.invalidVertices.length
+        ? "The purple vertices (thick outline) use the forbidden fourth color. All edges are nevertheless properly colored."
+        : state.conflicts.length
+          ? "After the experiment, the prover's monochromatic edges are shown in red."
+          : "Every edge joins vertices of different colors.";
+      progressLabel.textContent = `${ROUNDS} of ${ROUNDS} rounds complete; ${rejected} rejected.`;
+      showResult(rejected, failureCounts);
+    }
+
+    function showResult(rejected, failureCounts) {
+      result.className = "";
+      if (state.strategy === "honest") {
+        result.innerHTML = rejected === 0
+          ? `<span class="pass"><b>ACCEPT.</b></span> The honest proof passed all ${ROUNDS} randomized rounds.`
+          : `<span class="fail"><b>BUG.</b></span> The honest proof was rejected in ${rejected} rounds. This should never happen.`;
+      } else if (rejected > 0) {
+        result.innerHTML = `<span class="fail"><b>REJECT.</b></span> ${rejected} of ${ROUNDS} randomized rounds found a contradiction, so a single round catches this prover with probability about ${(rejected / ROUNDS).toFixed(2)}. One failed round is enough to reject the proof.`;
+      } else {
+        result.innerHTML = `<b>NOT CAUGHT.</b> All ${ROUNDS} rounds passed even though the proof is dishonest.` +
+          (PCP.Q <= state.params.D
+            ? ` Here \\(q = ${PCP.Q}\\) is not larger than the degree bound \\(D = ${state.params.D}\\), and the soundness argument needs \\(q\\) well above \\(D\\).`
+            : ` Randomized verification can miss a lie in a finite run.`);
+        typeset();
+      }
+      if (failureCounts.size) {
+        const rows = [...failureCounts].sort((x, y) => y[1] - x[1])
+          .map(([name, count]) => `<tr><td><code>${name}</code></td><td class="num">${count}</td></tr>`).join("");
+        failureTable.innerHTML =
+          `<table aria-label="Failed tests"><thead><tr><th>Failed test</th><th class="num">Rounds</th></tr></thead><tbody>${rows}</tbody></table>`;
+      }
+    }
+
+    newGraphButton.addEventListener("click", chooseGraph);
+    exampleSelect.addEventListener("change", chooseGraph);
+    sizeSelect.addEventListener("change", chooseGraph);
+    fieldSelect.addEventListener("change", changeProver);
+    strategySelect.addEventListener("change", changeProver);
+    runButton.addEventListener("click", runVerifier);
+    chooseGraph();
+  </script>
+</body>
+</html>
